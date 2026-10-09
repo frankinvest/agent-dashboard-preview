@@ -1,0 +1,942 @@
+<!DOCTYPE html><html lang="zh"> <head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent 控制台</title><link rel="stylesheet" href="./_astro/agents.css"></head> <body> <div id="login" class="wrap"> <div class="login-card"> <div class="brand"> <span class="brand-mark" aria-hidden="true"> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"></path><path d="M11 5.5l1-1a4 4 0 0 1 5.6 5.6l-1 1"></path><path d="M13 18.5l-1 1a4 4 0 0 1-5.6-5.6l1-1"></path></svg> </span> <span class="brand-name">Agent 控制台</span> </div> <h1>需要密码</h1> <p class="hint">数据在浏览器本地解密，不会发送到任何服务器。密码只存在我本机。</p> <label for="pw">密码</label> <input type="password" id="pw" placeholder="••••••••" autocomplete="off" autofocus> <button id="btn" type="button">进入</button> <div id="error"></div> </div> </div> <div id="app" class="wrap"> <div class="topbar"> <span class="brand-mark" aria-hidden="true"> <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"></path><path d="M11 5.5l1-1a4 4 0 0 1 5.6 5.6l-1 1"></path><path d="M13 18.5l-1 1a4 4 0 0 1-5.6-5.6l1-1"></path></svg> </span> <span class="brand-name">Agent 控制台</span> <span class="spacer"></span> <span class="live"><i></i>实时 · 10 秒刷新</span> <span class="stamp">上次更新: <span id="meta-update">读取中…</span></span> </div> <div class="seg" id="seg" role="tablist"> <button class="on" data-tab="tasks" type="button" role="tab">任务进度</button> <button data-tab="arch" type="button" role="tab">架构地图</button> </div> <section id="panel-tasks" class="panel-view"></section> <section id="panel-arch" class="panel-view" style="display:none"></section> </div> <script>
+  /* ============================================================
+     0. 常量与静态结构
+     ============================================================ */
+  const POLL_MS = 10000;                                  /* 打开页面时每 10 秒刷新；无人打开 = 无请求 */
+  const ENC_URL = './data/agent-dashboard.enc.json';
+
+  const PHASES = [
+    { k:'planning',  n:'规划', who:'codex'  },
+    { k:'executing', n:'执行', who:'xiaomi' },
+    { k:'verifying', n:'验收', who:'codex'  },
+    { k:'done',      n:'完成', who:''       },
+  ];
+  const OWNERS = {
+    codex:  { name:'Codex', short:'C',  role:'方案 · 测试方案 · 独立验收' },
+    xiaomi: { name:'小秘',  short:'秘', role:'落地 · 写测试 · 交证据' },
+    none:   { name:'无人',  short:'–',  role:'等待派发' },
+  };
+  /* 事件里的 phase → 阶段轨下标（采集器为每个事件标好 phase，避免靠文件名猜） */
+  const PHASE_INDEX = { planning:0, executing:1, verifying:2, done:3 };
+
+  /* 架构地图拓扑：5 层。tech 写"用了什么项目"，role 写"干什么"。 */
+  const LAYERS = [
+    { id:'people', name:'① 人', color:'#f79009', nodes:[
+      { id:'frank', icon:'user', name:'Frank', tech:'人类操作员 · 飞书群', role:'提需求 / 拍板 / 看进度' },
+    ]},
+    { id:'entry', name:'② 入口', color:'#12b76a', nodes:[
+      { id:'bridge', icon:'link', name:'lark-agents-bridge', tech:'自建 Node 桥接 · 飞书长连接', role:'把群里 @Codex 的消息转成本地 Codex 任务' },
+      { id:'gateway', icon:'server', name:'OpenClaw 网关', tech:'OpenClaw · 飞书 / Telegram 通道', role:'小秘的宿主：会话 / 工具 / 技能 / 委派' },
+    ]},
+    { id:'runtime', name:'③ 运行时', color:'#4f46e5', nodes:[
+      { id:'codex', icon:'cpu', name:'Codex（我）', tech:'Codex CLI · 强模型（额度有限）', role:'出方案 + 测试方案 + 独立验收' },
+      { id:'xiaomi', icon:'sparkle', name:'小秘 agent:main', tech:'OpenClaw agent · 本地模型（额度足）', role:'按方案落地 + 写测试 + 交证据' },
+    ]},
+    { id:'state', name:'④ 共享状态', color:'#7c3aed', nodes:[
+      { id:'bus', icon:'db', hub:true, name:'agent-bus', tech:'自建状态总线 · runs/ + JSONL', role:'任务产物 / 委派记录 / 看护日志（全流程枢纽）' },
+      { id:'snapshot', icon:'lock', name:'看板密文快照', tech:'PBKDF2 + AES-256-GCM', role:'采集 → 加密 → 推送 GitHub' },
+    ]},
+    { id:'delivery', name:'⑤ 交付', color:'#0ea5e9', nodes:[
+      { id:'site', icon:'globe', name:'frankofswing.com', tech:'Astro 静态站 · Vercel', role:'公开站点 + 密码门 /agents/' },
+    ]},
+  ];
+
+  /* 连线：route 'v' = 出下方进上方；'h' = 出右侧进左侧。x1/x2 或 y1/y2 是锚点在边上的位置(0~1)。 */
+  const EDGES = [
+    { from:'frank',    to:'bridge',   route:'v', x1:.50, x2:.35, kind:'msg',     label:'@Codex 群消息' },
+    { from:'frank',    to:'gateway',  route:'v', x1:.50, x2:.65, kind:'msg',     label:'@小秘 群消息' },
+    { from:'bridge',   to:'codex',    route:'v', x1:.50, x2:.50, kind:'call',    label:'codex exec' },
+    { from:'gateway',  to:'xiaomi',   route:'v', x1:.50, x2:.50, kind:'call',    label:'openclaw agent --json' },
+    { from:'codex',    to:'xiaomi',   route:'h', y1:.50, y2:.50, kind:'handoff', label:'委派 / 回执' },
+    { from:'codex',    to:'bus',      route:'v', x1:.32, x2:.30, kind:'write',   label:'写 plan / verify-report' },
+    { from:'xiaomi',   to:'bus',      route:'v', x1:.30, x2:.70, kind:'write',   label:'写 status.json / exec-log' },
+    { from:'bus',      to:'snapshot', route:'h', y1:.50, y2:.50, kind:'write',   label:'采集 + 加密' },
+    { from:'snapshot', to:'site',     route:'v', x1:.50, x2:.50, kind:'deliver', label:'密文 push' },
+  ];
+  const FLOW_KINDS = [
+    { k:'msg',     c:'#f79009', t:'群消息触发' },
+    { k:'call',    c:'#4f46e5', t:'调用 agent' },
+    { k:'handoff', c:'#7c3aed', t:'委派 / 回执' },
+    { k:'write',   c:'#64748b', t:'落盘 / 采集' },
+    { k:'deliver', c:'#0ea5e9', t:'发布' },
+  ];
+
+  const ICONS = {
+    user:    '<path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+    link:    '<path d="M9 15l6-6"/><path d="M11 5.5l1-1a4 4 0 0 1 5.6 5.6l-1 1"/><path d="M13 18.5l-1 1a4 4 0 0 1-5.6-5.6l1-1"/>',
+    server:  '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+    cpu:     '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/>',
+    sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9L12 3.5Z"/>',
+    db:      '<ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/>',
+    lock:    '<rect x="4.5" y="10" width="15" height="10.5" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    globe:   '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.4 2.5 3.7 5.6 3.7 9S14.4 18.5 12 21c-2.4-2.5-3.7-5.6-3.7-9S9.6 5.5 12 3Z"/>',
+    check:   '<path d="M20 6.5 9.5 17 4 11.5"/>',
+  };
+
+  /* 组件目录表：回答"用了什么项目 / 怎么起（常驻、按需、默认加载）"。 */
+  const CATALOG = [
+    { n:'lark-agents-bridge', t:'自建 Node 桥接包（+1 个本地补丁）', m:'常驻', h:'launchd ai.feishu-codex-bridge.bot', e:'~/.feishu-codex-bridge/config.json' },
+    { n:'OpenClaw 网关',       t:'OpenClaw 平台（+2 个本地补丁）',   m:'常驻', h:'launchd ai.openclaw.gateway',          e:'~/.openclaw/openclaw.json' },
+    { n:'Codex（我）',         t:'Codex CLI + 强模型端点',           m:'按需', h:'被桥接唤起',                          e:'~/.codex/config.toml' },
+    { n:'小秘 agent:main',     t:'OpenClaw agent + 本地模型端点',     m:'按需', h:'被网关唤起',                          e:'~/.openclaw/workspace/main/' },
+    { n:'feishu-collab',       t:'自建 skill · 三方协作规则',         m:'默认加载', h:'Codex 常驻 + 小秘 workspace 已装', e:'~/.codex/skills/feishu-collab/SKILL.md' },
+    { n:'frankofswing-dev',    t:'自建 skill · 站点开发约定',         m:'默认加载', h:'同上',                                e:'~/.codex/skills/frankofswing-dev/SKILL.md' },
+    { n:'agent-bus',           t:'自建状态总线（JSON / JSONL）',      m:'按需', h:'双方读写',                            e:'~/.openclaw/agent-bus/runs/<run-id>/' },
+    { n:'delegate / ask_codex', t:'自建委派脚本（自带两行群回执）',    m:'按需', h:'给指令拉起',                          e:'za/delegate.py · za/ask_codex.py' },
+    { n:'agent-dashboard',     t:'自建采集 + 加密 + 推送',            m:'常驻', h:'launchd ai.agent-dashboard.push（每 60 秒）', e:'~/.openclaw/agent-dashboard/' },
+    { n:'watchdog',            t:'自建看护（ps 探活 + 连续 2 次才判 down）', m:'常驻', h:'launchd ai.agent-bus.watchdog（每 60 秒）', e:'~/.local/share/agent-bus/watchdog.py' },
+    { n:'frankofswing.com',    t:'Astro + Vercel（推送走 GitHub Contents API）', m:'远端', h:'Vercel 自动构建',            e:'~/.openclaw/workspace-jobs' },
+  ];
+
+  const MEMORY = [
+    { who:'Codex（我）', items:[
+      ['za/CODEX-CONTEXT.md', '交接记忆：换模型 / 新会话先读'],
+      ['~/.codex/AGENTS.md', '全局硬规则（怎么给小秘发消息等）'],
+      ['~/.codex/sessions/**/rollout-*.jsonl', '会话原文（可检索）'],
+      ['za/WORKFLOW.md + TESTING.md', '开发工作流 / 测试工作流'],
+    ]},
+    { who:'小秘（OpenClaw）', items:[
+      ['~/.openclaw/workspace/AGENTS.md', '每轮都加载的常驻规则'],
+      ['workspace/main/{IDENTITY,USER,MEMORY,SOUL}.md', '身份 / 用户 / 长期记忆'],
+      ['workspace/main/memory/*.md', '按日期的记忆片段'],
+      ['workspace/main/skills/', '已装技能（feishu-collab 等）'],
+    ]},
+    { who:'共享（agent-bus）', items:[
+      ['runs/<run-id>/{task,plan,test-plan,exec-log,verify-report}.md', '一次任务的全部产物'],
+      ['runs/<run-id>/status.json', '看板读的进度状态'],
+      ['runs.jsonl · delegations/*.json', '历史结论 / 每次委派与成本'],
+      ['watchdog.log', '看护事件'],
+    ]},
+  ];
+
+  const SELF_SKILLS = [
+    { n:'feishu-collab', t:'default', d:'三方协作规则（回话顺序 / 分工 / 监工）' },
+    { n:'frankofswing-dev', t:'default', d:'站点开发约定（代码位置 / 部署 / 内容规则）' },
+    { n:'imagegen', t:'ondemand', d:'生成位图素材' },
+    { n:'openai-docs', t:'ondemand', d:'OpenAI / Codex 官方资料' },
+    { n:'skill-creator · skill-installer', t:'ondemand', d:'写 skill / 装 skill' },
+    { n:'documents · pdf · presentations · spreadsheets', t:'ondemand', d:'Office 文档产出' },
+    { n:'visualize', t:'ondemand', d:'交互式可视化' },
+  ];
+
+  /* ============================================================
+     1. 工具函数
+     ============================================================ */
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const icon = (n, sz) => '<svg width="' + (sz||15) + '" height="' + (sz||15) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n] || '') + '</svg>';
+
+  function ts2hm(iso) {
+    if (!iso) return '';
+    const m = String(iso).match(/T(\d{2}:\d{2})(?::(\d{2}))?/);
+    return m ? (m[2] ? m[1] + ':' + m[2] : m[1]) : '';
+  }
+  function fmtDT(iso) {
+    if (!iso) return '读取中…';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function humanDur(ms) {
+    if (!isFinite(ms) || ms < 0) return '—';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + ' 秒';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + ' 分 ' + (s % 60) + ' 秒';
+    const h = Math.floor(m / 60);
+    return h + ' 时 ' + (m % 60) + ' 分';
+  }
+  function durBetween(a, b) {
+    if (!a) return '—';
+    const t0 = new Date(a).getTime(), t1 = b ? new Date(b).getTime() : Date.now();
+    if (isNaN(t0) || isNaN(t1)) return '—';
+    return humanDur(t1 - t0);
+  }
+  function money(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return '—';
+    return '$' + v.toFixed(v < 1 ? 3 : 2);
+  }
+  function num(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return '—';
+    return v.toLocaleString('en-US');
+  }
+  function shortNum(v) {
+    if (typeof v !== 'number' || !isFinite(v)) return '—';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    return String(v);
+  }
+
+  /* ============================================================
+     2. WebCrypto（保持不变：密码只在浏览器里）
+     ============================================================ */
+  async function deriveKey(password, salt, iter) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name:'PBKDF2', salt, iterations:iter, hash:'SHA-256' }, base, { name:'AES-GCM', length:256 }, false, ['decrypt']);
+  }
+  async function decryptBlob(blob, password) {
+    const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    const key = await deriveKey(password, b64(blob.salt), blob.iter);
+    const pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv:b64(blob.nonce) }, key, b64(blob.ct));
+    return JSON.parse(new TextDecoder().decode(pt));
+  }
+  async function fetchBlob() {
+    const r = await fetch(ENC_URL + '?t=' + Date.now(), { cache:'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+  async function blobHash(b) {
+    const s = JSON.stringify({ s:b.salt, n:b.nonce, c:b.ct, i:b.iter });
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2,'0')).join('');
+  }
+
+  /* ============================================================
+     3. 任务进度
+     ============================================================ */
+  function phaseTimes(task) {
+    const out = [null, null, null, null];
+    (task.events || []).forEach((e) => {
+      const i = (e.phase != null && PHASE_INDEX[e.phase] != null) ? PHASE_INDEX[e.phase] : 0;
+      if (i == null) return;
+      if (!out[i] || String(e.ts) < String(out[i].ts)) out[i] = { ts:e.ts, who:e.who };
+    });
+    return out;
+  }
+  /* 已经出结论的任务 = 已结束（不做"进行中"）。
+     —— 2026-10-09 修：有一次 run 忘了把 status.json 收尾（phase 停在 executing、verdict 已是 PASS），
+     页面就把它当成"当前任务"，于是长期显示"小秘 执行中"（Frank 实际看到的现象）。
+     有 verdict 就算结束，这条自愈规则让同类脏数据不可能再变成幽灵任务。 */
+  function isFinished(t) {
+    return !!t && ((t.phase || '') === 'done' || t.verdict === 'PASS' || t.verdict === 'FAIL');
+  }
+  function pickCurrent(tasks) {
+    const active = tasks.filter((t) => !isFinished(t))
+      .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+    if (active.length) return active[0];
+    /* 全都结束了 → 显示"最近开始的那一个"（按 started_at），
+       否则补写旧 run 的 status.json 会把旧任务顶到最前面（2026-10-09 补充） */
+    const byStart = tasks.slice().sort((a, b) =>
+      String(b.started_at || '').localeCompare(String(a.started_at || '')) ||
+      String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+    return byStart[0] || null;
+  }
+  function stateOf(task) {
+    if (!task) return 'idle';
+    if (task.verdict === 'FAIL') return 'fail';
+    if (isFinished(task)) return task.verdict === 'PASS' ? 'done' : (task.phase === 'done' ? 'idle' : 'run');
+    return 'run';
+  }
+  function renderRail(task) {
+    const cur = PHASES.findIndex((p) => p.k === (task.phase || 'planning'));
+    /* 已出结论的任务，阶段轨直接停在"完成"，避免"有 verdict 却停在执行"的脏数据显示成进行中 */
+    const idx = isFinished(task) ? (PHASES.length - 1) : (cur < 0 ? 0 : cur);
+    const times = phaseTimes(task);
+    const pct = (idx / (PHASES.length - 1)) * 75;   /* 线宽 = 75% × 进度（线本身占 75%） */
+    const steps = PHASES.map((p, i) => {
+      const cls = i < idx ? 'done' : (i === idx ? (stateOf(task) === 'done' ? 'done' : 'current') : '');
+      const mark = i < idx || (i === idx && stateOf(task) === 'done')
+        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' + ICONS.check + '</svg>'
+        : '<span class="num">' + (i + 1) + '</span>';
+      let info = times[i] ? ((OWNERS[times[i].who] || {}).name || times[i].who) + ' · ' + ts2hm(times[i].ts) : '';
+      if (!info && i === idx && cls === 'current') info = '进行中…';
+      return '<div class="rail-step ' + cls + '">'
+        + '<span class="rail-dot">' + mark + '</span>'
+        + '<span class="sn">' + p.n + '</span>'
+        + '<span class="sm">' + esc(info) + '</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="rail">'
+      + '<span class="rail-line"></span>'
+      + '<span class="rail-fill" style="width:' + pct.toFixed(2) + '%"></span>'
+      + steps + '</div>';
+  }
+  function feedWho(w) {
+    const o = OWNERS[w];
+    if (!o) return '<span class="tag ondemand">' + esc(w || '?') + '</span>';
+    return '<span class="tag ' + (w === 'codex' ? 'codex' : 'xiaomi') + '">' + esc(o.name) + '</span>';
+  }
+  /* task-panel-v2: 阶段展开/折叠 (accordion 单选) */
+  function toggleStage(stage) {
+    const items = document.querySelectorAll('.stage-item');
+    items.forEach(function(it) {
+      if (it.dataset.stage === stage) {
+        const cur = it.getAttribute('aria-expanded') === 'true';
+        it.setAttribute('aria-expanded', cur ? 'false' : 'true');
+        const tog = it.querySelector('.stage-toggle');
+        if (tog) tog.textContent = cur ? '▸' : '▾';
+      } else {
+        it.setAttribute('aria-expanded', 'false');
+        const tog = it.querySelector('.stage-toggle');
+        if (tog) tog.textContent = '▸';
+      }
+    });
+  }
+  /* visual_check.py 探针 */
+  window.__stageItems = function() {
+    return [...document.querySelectorAll('.stage-item')].map(function(s) {
+      const body = s.querySelector('.stage-body');
+      return {
+        stage: s.dataset.stage,
+        ariaExpanded: s.getAttribute('aria-expanded') === 'true',
+        isCurrent: s.classList.contains('is-current'),
+        bodyOffsetHeight: body ? body.offsetHeight : 0,
+      };
+    });
+  };
+  window.__currentRunIdOnPage = function() {
+    const el = document.querySelector('.current-task-card .run-id-display');
+    return el ? el.textContent.trim() : '';
+  };
+  window.__historyRunIds = function() {
+    return [...document.querySelectorAll('.history-row')].map(function(r) { return r.dataset.runId; }).filter(Boolean);
+  };
+  function renderTasks(data) {
+    const tasks = data.tasks || [];
+    const res = data.resources || {};
+    const health = data.health || {};
+    // task-panel-v2: current_run_id 是数据源 (取自 payload 顶层)
+    const currentRunId = data.current_run_id || (tasks.slice().sort((a,b)=>String(b.updated_at||"").localeCompare(String(a.updated_at||"")))[0]||{}).run_id;
+    const task = tasks.find((t) => t.run_id === currentRunId) || pickCurrent(tasks);
+
+    let html = '';
+    if (!task) {
+      html += '<div class="card"><p class="sec">当前任务</p><div class="empty">还没有任务记录。派一个任务给我，这里会出现它的全流程。</div></div>';
+    } else {
+      const st = stateOf(task);
+      const owner = OWNERS[task.owner] ? task.owner : 'none';
+      const pill = st === 'run' ? '<span class="pill run"><i></i>进行中</span>'
+        : st === 'done' ? '<span class="pill ok"><i></i>已完成 · ' + esc(task.verdict || 'PASS') + '</span>'
+        : st === 'fail' ? '<span class="pill fail"><i></i>失败 · ' + esc(task.verdict || 'FAIL') + '</span>'
+        : '<span class="pill idle"><i></i>空闲</span>';
+      const attempts = typeof task.attempts === 'number' ? task.attempts : 0;
+
+      // === 当前任务卡 v2: 状态胶囊 + 任务一句话 + run_id (含 .run-id-display 供探针) + 谁在干活 ===
+      const rid = task.run_id || '';
+      html += '<div class="card current-task-card" data-run-id="' + esc(rid) + '">'
+        + '<p class="sec">当前任务</p><div class="hero">'
+        + '<div class="hero-main">'
+        +   '<div>' + pill + '</div>'
+        +   '<h2>' + esc(task.task_one_liner || '(无任务描述)') + '</h2>'
+        +   '<div class="sub"><span class="run-id-display">' + esc(rid) + '</span> · 第 ' + attempts + ' 次尝试 · 开始 ' + esc(ts2hm(task.started_at) || '—') + '</div>'
+        + '</div>'
+        + '<div class="owner" data-state="' + (st === 'run' ? 'running' : (st === 'done' ? 'done' : 'idle')) + '">'
+        +   '<span class="avatar" data-who="' + owner + '">' + esc((OWNERS[owner] || OWNERS.none).short) + '</span>'
+        +   '<span><span class="lbl">现在谁在干活</span>'
+        +     '<div class="nm">' + esc((OWNERS[owner] || OWNERS.none).name) + '</div>'
+        +     '<div class="rl">' + esc((OWNERS[owner] || OWNERS.none).role) + '</div></span>'
+        +   '<span class="eta"><div class="v" data-elapsed="' + esc(task.started_at || '') + '" data-stop="' + (st === 'run' ? '' : '1') + '">'
+        +     esc(durBetween(task.started_at, st === 'run' ? null : task.updated_at)) + '</div><div class="k">'
+        +     (st === 'run' ? '已耗时（实时）' : '总耗时') + '</div></span>'
+        + '</div></div>'
+        + (task.note ? '<div style="margin-top:14px;font-size:12.5px;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">' + esc(task.note) + '</div>' : '')
+        + '</div>';
+
+      // === 四阶段 v2 (可展开, S12 探针目标) ===
+      const STAGE_META = [
+        { k: 'planning',  n: '① 规划' },
+        { k: 'executing', n: '② 执行' },
+        { k: 'verifying', n: '③ 验收' },
+        { k: 'done',      n: '④ 完成' },
+      ];
+      const curPhase = task.phase || 'planning';
+      const stages = task.stages || {};
+      const curIdx = STAGE_META.findIndex((x) => x.k === curPhase);
+      html += '<div class="card stages-card"><p class="sec">四阶段</p><div class="stages" id="stages" data-current-phase="' + esc(curPhase) + '">';
+      STAGE_META.forEach(function(m, i) {
+        const s = stages[m.k] || {};
+        const files = Array.isArray(s.files) ? s.files : [];
+        const who = s.who || '?';
+        const at = s.at || '';
+        const atStr = at ? at.slice(11, 19) : '—';
+        // 状态 class
+        let stCls = 'todo';
+        if (i < curIdx) stCls = 'done';
+        else if (i === curIdx) stCls = (curPhase === 'done') ? 'done' : 'current';
+        // 默认展开: 当前阶段, 或 phase==done 时 done 阶段
+        const isCurDefault = (m.k === curPhase) || (curPhase === 'done' && m.k === 'done');
+        const ariaExp = isCurDefault ? 'true' : 'false';
+        const isCurrentCls = (m.k === curPhase) ? ' is-current' : '';
+        html += '<div class="stage-item stage-' + m.k + ' ' + stCls + isCurrentCls + '" data-stage="' + m.k + '" data-stage-idx="' + i + '" aria-expanded="' + ariaExp + '">'
+          + '<div class="stage-header" role="button" tabindex="0" onclick="toggleStage(\'' + m.k + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleStage(\'' + m.k + '\')}">'
+          +   '<span class="stage-marker">' + (stCls === 'done' ? '✓' : (stCls === 'current' ? '<span class="pulse"></span>' : (i + 1))) + '</span>'
+          +   '<span class="stage-name">' + m.n + '</span>'
+          +   '<span class="stage-who">' + esc(who) + '</span>'
+          +   '<span class="stage-time">' + esc(atStr) + '</span>'
+          +   '<span class="stage-toggle">' + (ariaExp === 'true' ? '▾' : '▸') + '</span>'
+          + '</div>'
+          + '<div class="stage-body" data-stage-body="' + m.k + '">';
+        if (m.k === 'done') {
+          const verdict = s.verdict;
+          const note = s.note;
+          if (verdict) html += '<div class="stage-verdict"><span class="pill ' + (verdict === 'PASS' ? 'ok' : 'fail') + '"><i></i>' + esc(verdict) + '</span></div>';
+          if (note) html += '<div class="stage-file-excerpt">' + esc(note) + '</div>';
+          if (!verdict && !note) html += '<div class="stage-empty">该阶段尚未开始</div>';
+        } else if (files.length === 0) {
+          html += '<div class="stage-empty">该阶段尚未开始</div>';
+        } else {
+          files.forEach(function(f) {
+            html += '<div class="stage-file">'
+              + '<div class="stage-file-head"><span class="file-name">' + esc(f.name || '') + '</span>'
+              + '<span class="file-title">' + esc(f.title || '') + '</span></div>'
+              + '<div class="file-excerpt">"' + esc(f.excerpt || '') + '"</div>'
+              + '</div>';
+          });
+        }
+        html += '</div></div>';
+      });
+      html += '</div></div>';
+    }
+
+    /* 左：活动流；右：资源 + 健康 */
+    const events = ((task && task.events) || []).slice().reverse();
+    const feed = events.length
+      ? events.slice(0, 9).map((e, i) => '<div class="feed-row' + (i === 0 ? ' new' : '') + '">'
+          + '<span class="feed-t">' + esc(ts2hm(e.ts)) + '</span>'
+          + '<span class="feed-w">' + feedWho(e.who) + '</span>'
+          + '<span class="feed-a">' + esc(e.what || '') + '</span>'
+          + '<span class="feed-f">' + esc(e.file || '') + '</span></div>').join('')
+      : '<div class="empty">还没有动作。</div>';
+
+    html += '<div class="cols" style="margin-top:14px">'
+      + '<div class="card"><p class="sec">活动流（最近 ' + Math.min(9, events.length) + ' 条）</p><div class="feed">' + feed + '</div></div>'
+      + '<div class="stack">' + renderResources(res) + renderProviders(data.providers) + renderHealth(health) + '</div>'
+      + '</div>';
+
+    html += renderHistory(tasks, currentRunId);
+    $('panel-tasks').innerHTML = html;
+    tickElapsed();
+  }
+
+  function renderResources(res) {
+    const cost = (typeof res.todayCostUsd === 'number') ? res.todayCostUsd : null;
+    const tk = res.codexTodayTokens || {};
+    const delegations = Array.isArray(res.recentDelegations) ? res.recentDelegations : [];
+    const sessions = (typeof res.codexSessionsToday === 'number') ? res.codexSessionsToday : 0;
+    const tkTotal = (typeof tk.total === 'number' && tk.total > 0) ? tk.total : null;
+
+    const stats = '<div class="stats">'
+      + '<div class="stat"><div class="k">今日成本（小秘侧）</div><div class="v">' + (cost == null ? '—' : money(cost)) + '</div></div>'
+      + '<div class="stat"><div class="k">Codex 今日 token（含缓存）</div><div class="v">' + shortNum(tkTotal) + '<small>' + (tk.output ? '出 ' + shortNum(tk.output) : '') + '</small></div></div>'
+      + '<div class="stat"><div class="k">今日委派</div><div class="v">' + delegations.length + '<small>次</small></div></div>'
+      + '<div class="stat"><div class="k">Codex 会话</div><div class="v">' + sessions + '<small>今日</small></div></div>'
+      + '</div>';
+
+    const byModel = res.todayByModel || {};
+    const rows = Object.keys(byModel)
+      .filter((k) => k && k !== 'unknown' && k !== 'null' && byModel[k] > 0)
+      .sort((a, b) => byModel[b] - byModel[a]);
+    const max = rows.length ? byModel[rows[0]] : 0;
+    const bars = rows.length
+      ? '<div class="bars">' + rows.map((m) => '<div class="bar">'
+          + '<span class="bl" title="' + esc(m) + '">' + esc(String(m).replace(/^[a-z-]+\//, '')) + '</span>'
+          + '<span class="bt"><span class="bf" style="width:' + ((byModel[m] / max) * 100).toFixed(1) + '%"></span></span>'
+          + '<span class="bv">' + money(byModel[m]) + '</span></div>').join('') + '</div>'
+      : '';
+
+    return '<div class="card"><p class="sec">资源消耗</p>' + stats + bars + '</div>';
+  }
+
+  const SVC_LABEL = {
+    'ai.openclaw.gateway': '小秘网关',
+    'ai.feishu-codex-bridge.bot': '桥接（Codex）',
+    'ai.agent-bus.watchdog': '看护 watchdog',
+    'ai.agent-dashboard.push': '看板推送',
+  };
+
+  /* 模型平台侧（官方接口拿到的权威数据）：GLM 额度 + DeepSeek 余额 */
+  function pbar(pct) {
+    const p = Math.max(0, Math.min(100, Number(pct) || 0));
+    const color = p >= 90 ? 'var(--fail)' : p >= 70 ? 'var(--run)' : 'var(--accent)';
+    return '<span class="bt"><span class="bf" style="width:' + p.toFixed(1) + '%;background:' + color + '"></span></span>';
+  }
+  function renderProviders(p) {
+    p = p || {};
+    const g = p.glm || {}, d = p.deepseek || {};
+    const rows = [];
+
+    if (g.ok) {
+      const lims = g.limits || [];
+      const period = lims.filter((L) => L.number === 1)[0] || lims[lims.length - 1] || {};
+      const short = lims.filter((L) => L.number !== 1)[0] || {};
+      const resetTxt = period.resetAt ? String(period.resetAt).slice(5, 16).replace('T', ' ') + ' 重置' : '';
+      rows.push('<div class="pv-h">' + esc(g.name || '编程套餐') + ' · ' + esc(g.level || '') + ' <span class="tag default">平台接口</span></div>');
+      rows.push('<div class="bar" style="grid-template-columns:auto 1fr auto"><span class="bl">周期额度</span>'
+        + pbar(period.percentage) + '<span class="bv">' + (period.percentage == null ? '—' : period.percentage + '%') + '</span></div>');
+      rows.push('<div class="pv-s">已用 ' + num(period.used) + ' / ' + num(period.usage) + ' · 剩 ' + num(period.remaining)
+        + (resetTxt ? ' · ' + esc(resetTxt) : '') + '</div>');
+      if (short.usage) {
+        rows.push('<div class="bar" style="grid-template-columns:auto 1fr auto;margin-top:6px"><span class="bl">5 小时窗口</span>'
+          + pbar(short.percentage) + '<span class="bv">' + num(short.used) + '/' + num(short.usage) + '</span></div>');
+      }
+      rows.push('<div class="pv-s">今日 token：' + shortNum(g.todayTokens) + (g.todayCalls ? ' · 调用 ' + num(g.todayCalls) + ' 次' : '')
+        + ((g.todayByModel && g.todayByModel.length) ? '（' + g.todayByModel.map((m) => esc(m.model) + ' ' + shortNum(m.tokens)).join('、') + '）' : '') + '</div>');
+    } else {
+      rows.push('<div class="pv-h">编程套餐 <span class="tag ondemand">接口取不到</span></div>'
+        + '<div class="pv-s">' + esc(g.error || '未配置 key') + '</div>');
+    }
+
+    rows.push('<div class="pv-h" style="margin-top:12px">' + esc(d.name || '按量付费平台') + ' · 按量付费 <span class="tag default">官方余额</span></div>');
+    if (d.ok) {
+      rows.push('<div class="stats" style="margin-top:6px">'
+        + '<div class="stat"><div class="k">余额</div><div class="v">¥' + (d.balance == null ? '—' : d.balance) + '</div></div>'
+        + '<div class="stat"><div class="k">今日已消耗</div><div class="v">¥' + (d.spentToday == null ? '—' : d.spentToday.toFixed(2)) + '</div></div>'
+        + '</div>');
+    } else {
+      rows.push('<div class="pv-s">' + esc(d.error || '未配置 key') + '</div>');
+    }
+
+    const mx = p.minimax || {};
+    rows.push('<div class="pv-h" style="margin-top:12px">' + esc(mx.name || '小秘的模型平台') + '<span class="tag default">浏览器会话</span></div>');
+    if (mx.ok) {
+      const gm = (mx.models || [])[0] || {};
+      const num1 = (s) => { const v = parseFloat(String(s || '').replace('%', '')); return isFinite(v) ? v : 0; };
+      const pctOf = (used, total) => { const t = num1(total), u = num1(used); return t > 0 ? (u / t) * 100 : u; };
+      rows.push('<div class="bar" style="grid-template-columns:auto 1fr auto"><span class="bl">周限额</span>'
+        + pbar(pctOf(gm.weeklyUsed, gm.weeklyTotal))
+        + '<span class="bv">' + esc(gm.weeklyUsed || '—') + ' / ' + esc(gm.weeklyTotal || '—') + '</span></div>');
+      rows.push('<div class="pv-s">重置 ' + esc(String(gm.weeklyReset || '').slice(5, 16).replace('T', ' ') || '—')
+        + ' · 5h 限额 ' + esc(gm.intervalUsed || '—') + ' / ' + esc(gm.intervalTotal || '—')
+        + (gm.intervalReset ? '（' + esc(String(gm.intervalReset).slice(11, 16)) + ' 重置）' : '') + '</div>');
+      rows.push('<div class="pv-s">今日 token：' + shortNum(mx.todayTokens)
+        + ((mx.todayByModel && mx.todayByModel.length) ? '（' + mx.todayByModel.map((m) => esc(m.model) + ' ' + shortNum(m.tokens)).join('、') + '）' : '')
+        + (mx.cacheHitPercent ? ' · 缓存命中 ' + esc(mx.cacheHitPercent) + '%' : '') + '</div>');
+      if (mx.credits) {
+        rows.push('<div class="pv-s">积分余额：' + num(mx.credits.remaining) + ' / ' + num(mx.credits.total)
+          + '（已用 ' + num(mx.credits.used) + '）</div>');
+      }
+    } else {
+      rows.push('<div class="pv-s">' + esc(mx.error || '取不到（专用浏览器会话失效？）') + '</div>');
+    }
+
+    return '<div class="card"><p class="sec">模型额度 / 余额</p>' + rows.join('') + '</div>';
+  }
+  const WD_TEXT = {
+    'down': '检测到组件不可用', 'restart-attempt': '尝试重启', 'restart-ok': '重启成功',
+    'restart-failed': '重启失败', 'healthy': '健康检查通过',
+  };
+  function renderHealth(health) {
+    const services = (health.services || []).filter((s) => s.label);
+    const mine = services.filter((s) => SVC_LABEL[s.label]);
+    const other = services.filter((s) => !SVC_LABEL[s.label]);
+    /* 常驻进程看 pid；定时任务(StartInterval)跑完就退出，pid 恒为 '-' —— 要看上次退出码，
+       否则 watchdog / 看板推送 会长期显示假警报（2026-10-09 修） */
+    const svc = mine.length ? mine.map((s) => {
+      const alive = s.pid && s.pid !== '-' && s.pid !== '?';
+      const interval = s.kind === 'interval';
+      const okExit = String(s.status) === '0';
+      const good = interval ? okExit : alive;
+      const detail = interval
+        ? (okExit ? '定时任务 · 上次正常' : '定时任务 · 上次退出码 ' + esc(s.status))
+        : (alive ? 'pid ' + esc(s.pid) : '未运行');
+      return '<div class="svc"><span class="dot ' + (good ? 'up' : 'down') + '"></span>'
+        + '<span class="lb">' + esc(SVC_LABEL[s.label]) + '</span>'
+        + '<span class="pd">' + detail + '</span></div>';
+    }).join('') : '<div class="empty">暂无服务信息</div>';
+
+    const wd = (health.watchdog_tail || []).slice(-4).reverse().map((e) => {
+      const t = (WD_TEXT[e.event] || e.event || JSON.stringify(e).slice(0, 40));
+      const c = e.component ? '（' + e.component + '）' : '';
+      return '<div class="wd-row"><span class="tt">' + esc(ts2hm(e.ts)) + '</span> ' + esc(t) + esc(c) + '</div>';
+    }).join('');
+
+    return '<div class="card"><p class="sec">健康</p>' + svc
+      + (other.length ? '<div class="svc"><span class="dot up" style="background:var(--text-3);box-shadow:none"></span><span class="lb muted">其它 ai.* 任务 ' + other.length + ' 个（与本工作流无关）</span></div>' : '')
+      + (wd ? '<div class="wd"><p class="sec" style="margin:0 0 4px">看护最近事件</p>' + wd + '</div>' : '')
+      + '</div>';
+  }
+
+  function renderHistory(tasks, currentRunId) {
+    // task-panel-v2: 历史任务表**不含**当前任务 (S14 判定)
+    const rows = (tasks || []).filter((t) => t.run_id !== currentRunId)
+      .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+    if (!rows.length) return '<div class="card history-card" style="margin-top:14px"><p class="sec">历史任务（0，不含当前任务）</p><div class="empty">还没有历史任务。</div></div>';
+    const PH = ['planning','executing','verifying','done'];
+    const body = rows.map((t) => {
+      const st = stateOf(t);
+      const pill = st === 'done' ? '<span class="pill ok"><i></i>' + esc(t.verdict || 'PASS') + '</span>'
+        : st === 'fail' ? '<span class="pill fail"><i></i>' + esc(t.verdict || 'FAIL') + '</span>'
+        : st === 'run' ? '<span class="pill run"><i></i>进行中</span>'
+        : '<span class="pill idle"><i></i>—</span>';
+      const tIdx = PH.indexOf(t.phase || 'planning');
+      const isDoneT = isFinished(t);
+      const dots = PH.map(function(p, i) {
+        const c = isDoneT || (t.phase === 'done') ? 'on' : (i < tIdx ? 'on' : (i === tIdx ? 'cur' : ''));
+        return '<span class="hdot ' + c + '"></span>';
+      }).join('');
+      return '<tr class="history-row" data-run-id="' + esc(t.run_id || '') + '">'
+        + '<td><div>' + esc(t.task_one_liner || '') + '</div><div class="n dim">' + esc(t.run_id || '') + '</div></td>'
+        + '<td>' + pill + '</td>'
+        + '<td class="n hide-s">' + esc((OWNERS[t.owner] || OWNERS.none).name) + '</td>'
+        + '<td class="n hide-s">' + (typeof t.attempts === 'number' ? t.attempts : 0) + '</td>'
+        + '<td class="n right">' + esc(durBetween(t.started_at, t.updated_at)) + '</td>'
+        + '<td class="hide-s" style="white-space:nowrap"><span class="hist-progress" title="' + esc(t.phase || '?') + '">' + dots + '</span></td>'
+        + '</tr>';
+    }).join('');
+    return '<div class="card history-card" style="margin-top:14px"><p class="sec">历史任务（' + rows.length + '，不含当前任务）</p>'
+      + '<table class="tbl"><thead><tr><th>任务</th><th>结论</th><th class="hide-s">负责人</th><th class="hide-s">尝试</th><th>耗时</th><th class="hide-s">阶段</th></tr></thead>'
+      + '<tbody>' + body + '</tbody></table></div>';
+  }
+
+  /* 实时计时：只更新文本，不重排 */
+  function tickElapsed() {
+    document.querySelectorAll('[data-elapsed]').forEach((el) => {
+      if (el.getAttribute('data-stop')) return;
+      const t0 = new Date(el.getAttribute('data-elapsed')).getTime();
+      if (isNaN(t0)) return;
+      el.textContent = humanDur(Date.now() - t0);
+    });
+  }
+  setInterval(tickElapsed, 1000);
+
+  /* ============================================================
+     4. 架构地图
+     ============================================================ */
+  const NODE_DETAIL = {
+    frank:    { project:'—', run:'—', files:['飞书群 oc_63b6…'], env:[], note:'唯一管理员。需求与拍板的来源；两个 bot 都在这个群里回话。' },
+    bridge:   { project:'lark-agents-bridge（自建，含 1 个本地补丁）', run:'常驻 · launchd ai.feishu-codex-bridge.bot', files:['~/.feishu-codex-bridge/config.json'], env:[], note:'把群里 @Codex 的消息转成本地 Codex CLI 任务，再把我写回的答案发到群里。' },
+    gateway:  { project:'OpenClaw 平台（含 2 个本地补丁）', run:'常驻 · launchd ai.openclaw.gateway', files:['~/.openclaw/openclaw.json','~/.openclaw/service-env/ai.openclaw.gateway.env'], env:['OPENCLAW_FEISHU_ATALL_CHATS','OPENCLAW_FORCE_STRANDED_REPLY_RECOVERY','OPENCLAW_SUPPRESS_STRANDED_NOTICE'], note:'小秘的宿主：飞书/Telegram 通道、技能、工具、委派全在这里。三个本地补丁让 @所有人 能唤醒她、并且不丢消息、不发噪音。' },
+    codex:    { project:'Codex CLI + 本机配置的强模型端点', run:'按需 · 被桥接唤起', files:['~/.codex/config.toml','~/.codex/skills/','~/.codex/sessions/'], env:[], note:'贵、额度有限 → 只做"想"和"查"：澄清需求、出方案、写测试方案、独立验收。' },
+    xiaomi:   { project:'OpenClaw agent:main + 本地模型端点', run:'按需 · 被网关唤起', files:['~/.openclaw/workspace/main/','~/.openclaw/workspace/main/skills/'], env:[], note:'便宜、额度足 → 做"写"和"跑"：按方案落地、按测试方案写测试、跑完把证据交回来。' },
+    bus:      { project:'自建状态总线（无第三方依赖）', run:'按需读写', files:['~/.openclaw/agent-bus/runs/','~/.openclaw/agent-bus/delegations/','~/.openclaw/agent-bus/watchdog.log'], env:[], note:'一次任务的全部产物落在这里；看板与 watchdog 都从这里读，状态不藏在模型会话里。' },
+    snapshot: { project:'自建（Python cryptography + 浏览器 WebCrypto）', run:'常驻 · launchd ai.agent-dashboard.push（每 60 秒，内容没变就跳过）', files:['~/.openclaw/agent-dashboard/gen_dashboard.py','~/.openclaw/agent-dashboard/push_dashboard.py'], env:[], note:'密码只在本机权限 600 的文件里；仓库里只有密文，页面在浏览器端解密。' },
+    site:     { project:'Astro 静态站 + Vercel（推送走 GitHub Contents API）', run:'远端 · Vercel 自动构建', files:['~/.openclaw/workspace-jobs/src/pages/agents.astro'], env:[], note:'公开站点；/agents/ 有密码门，并且 noindex 不被搜索引擎收录。' },
+  };
+
+  function liveFacts(id, data) {
+    const arch = data.architecture || {};
+    const health = data.health || {};
+    const f = [];
+    const svcOf = (label) => (health.services || []).find((s) => s.label === label);
+    if (id === 'gateway') {
+      const s = svcOf('ai.openclaw.gateway');
+      f.push(['运行状态', s && s.pid && s.pid !== '-' ? '运行中 · pid ' + s.pid : '未运行']);
+      f.push(['通道', (arch.channels || []).map((c) => c.name).join(' · ') || '—']);
+      f.push(['插件', (arch.plugins || []).filter((p) => p.enabled).map((p) => p.id).join(' · ') || '—']);
+      f.push(['agents', (arch.agents || []).map((a) => a.id).join(' · ') || '—']);
+    }
+    if (id === 'codex') {
+      const s = svcOf('ai.feishu-codex-bridge.bot');
+      f.push(['桥接进程', s && s.pid && s.pid !== '-' ? '运行中 · pid ' + s.pid : '未运行']);
+      const tk = (data.resources || {}).codexTodayTokens || {};
+      f.push(['今日 token', tk.total ? num(tk.total) + '（出 ' + num(tk.output) + '）' : '—']);
+      f.push(['今日会话', String((data.resources || {}).codexSessionsToday || 0)]);
+    }
+    if (id === 'xiaomi') {
+      const skills = (arch.skills || []).filter((s) => s.eligible && !s.disabled);
+      f.push(['可用技能', skills.length + ' 个（其中 ' + skills.filter((s) => s.modelVisible).length + ' 个模型直接可见）']);
+      f.push(['自装技能', (arch.skills || []).filter((s) => s.ours).map((s) => s.name).join(' · ') || '—']);
+    }
+    if (id === 'bus') {
+      const runs = data.tasks || [];
+      f.push(['任务记录', runs.length + ' 条，最新 ' + (runs.length ? runs[runs.length - 1].run_id : '—')]);
+      f.push(['委派记录', ((data.resources || {}).recentDelegations || []).length + ' 次（今日）']);
+    }
+    if (id === 'snapshot') {
+      f.push(['最近生成', fmtDT(data.generatedAt)]);
+      const s = svcOf('ai.agent-dashboard.push');
+      f.push(['推送任务', s ? (s.pid && s.pid !== '-' ? '运行中' : '已安装 · 非持续运行') : '未安装']);
+    }
+    if (id === 'site') f.push(['线上入口', 'frankofswing.com/agents/']);
+    return f;
+  }
+
+  let selectedNode = null;
+
+  function renderArch(data) {
+    const arch = data.architecture || {};
+    const layersHtml = LAYERS.map((L) => {
+      const nodes = L.nodes.map((n) => '<button class="arch-node' + (n.hub ? ' is-hub' : '') + '" type="button" data-node-id="' + n.id + '">'
+        + '<span class="top"><span class="ic">' + icon(n.icon) + '</span><span class="nm">' + esc(n.name) + '</span>'
+        + (n.hub ? '<span class="tag default" style="margin-left:auto">枢纽</span>' : '') + '</span>'
+        + '<div class="tech">' + esc(n.tech) + '</div>'
+        + '<div class="role">' + esc(n.role) + '</div>'
+        + '</button>').join('');
+      return '<div class="arch-layer">'
+        + '<div class="arch-layer-head"><i style="background:' + L.color + '"></i><div><div class="n">' + esc(L.name) + '</div><div class="c">' + L.nodes.length + ' 个组件</div></div></div>'
+        + '<div class="arch-nodes">' + nodes + '</div></div>';
+    }).join('');
+
+    const legend = LAYERS.map((L) => '<span class="lg"><i style="background:' + L.color + '"></i>' + esc(L.name) + '</span>').join('');
+
+    /* 每种连线一个箭头色（marker 不能继承 stroke，只能各配一个） */
+    const MK = 'markerWidth="11" markerHeight="11" refX="9.5" refY="3.6" orient="auto" markerUnits="userSpaceOnUse"';
+    const markers = FLOW_KINDS.map((f) => '<marker id="ah-' + f.k + '" ' + MK + '>'
+      + '<path d="M0 0 L10 3.6 L0 7.2 z" fill="' + f.c + '" stroke="none"/></marker>').join('')
+      + '<marker id="ah-on" ' + MK + '><path d="M0 0 L10 3.6 L0 7.2 z" fill="#4f46e5" stroke="none"/></marker>';
+    const dot = '<svg class="arch-edges" id="arch-svg"><defs>' + markers + '</defs></svg><div id="arch-labels"></div>';
+
+    const flowLegend = FLOW_KINDS.map((f) => '<span><i style="background:' + f.c + '"></i>' + esc(f.t) + '</span>').join('');
+
+    $('panel-arch').innerHTML = '<div class="card">'
+      + '<div class="arch-head"><p class="sec" style="margin:0">架构地图 · ' + LAYERS.length + ' 层 / ' + LAYERS.reduce((a, l) => a + l.nodes.length, 0) + ' 个组件 / ' + EDGES.length + ' 条连接</p>'
+      + '<span class="spacer" style="flex:1"></span><span class="arch-hint">点任意组件 → 高亮它的上下游</span></div>'
+      + '<div class="arch-legend" style="margin-bottom:14px">' + legend + '</div>'
+      + '<div class="flowlegend">' + flowLegend + '</div>'
+      + '<div class="arch-canvas" id="arch-canvas"><div class="arch-layers">' + layersHtml + '</div>' + dot + '</div>'
+      + '</div>'
+      + '<div class="arch-detail" id="arch-detail"><span class="muted" style="font-size:12.5px">点上面的任意组件，这里会显示它的项目、启动方式、关键文件和实时状态。</span></div>'
+      + renderCatalog()
+      + '<div class="cols" style="margin-top:14px">' + renderMemory() + renderSkills(arch) + '</div>'
+      + renderPatches(arch);
+
+    requestAnimationFrame(() => { drawEdges(); syncSelection(); });
+  }
+
+  function renderCatalog() {
+    const body = CATALOG.map((c) => {
+      const tag = c.m === '默认加载' ? '<span class="tag default">默认加载</span>'
+        : c.m === '常驻' ? '<span class="tag xiaomi">常驻</span>'
+        : '<span class="tag ondemand">' + esc(c.m) + '</span>';
+      return '<tr><td><div style="font-weight:600">' + esc(c.n) + '</div><div class="dim" style="font-size:11.5px;font-family:var(--mono)">' + esc(c.t) + '</div></td>'
+        + '<td>' + tag + '<div class="dim" style="font-size:11.5px;margin-top:4px">' + esc(c.h) + '</div></td>'
+        + '<td class="dim" style="font-size:11.5px;font-family:var(--mono);word-break:break-word">' + esc(c.e) + '</td></tr>';
+    }).join('');
+    return '<div class="card" style="margin-top:14px"><p class="sec">组件目录 · 用了什么 / 怎么起</p>'
+      + '<table class="tbl"><thead><tr><th style="width:30%">组件</th><th style="width:26%">启动方式</th><th>证据（配置文件 / 代码位置）</th></tr></thead><tbody>'
+      + body + '</tbody></table></div>';
+  }
+
+  function renderMemory() {
+    const cols = MEMORY.map((g) => '<p class="sec" style="margin:0 0 6px">' + esc(g.who) + '</p>'
+      + '<ul class="list">' + g.items.map((it) => '<li><span class="n">' + esc(it[0]) + '</span><span class="d">' + esc(it[1]) + '</span></li>').join('') + '</ul>').join('');
+    return '<div class="card"><p class="sec">记忆系统（谁会记得什么）</p>' + cols + '</div>';
+  }
+
+  function renderSkills(arch) {
+    const skills = arch.skills || [];
+    const ours = skills.filter((s) => s.ours);
+    const ok = skills.filter((s) => !s.ours && s.eligible && !s.disabled);
+    const off = skills.filter((s) => !s.eligible || s.disabled);
+    const visible = ok.filter((s) => s.modelVisible);
+
+    const rowsOurs = ours.map((s) => '<li><span class="n">' + esc(s.name) + '</span><span class="d"><span class="tag default">常驻</span></span></li>').join('');
+    const rowsOk = ok.slice(0, 10).map((s) => '<li><span class="n">' + esc(s.name) + '</span><span class="d">'
+      + (s.modelVisible ? '<span class="tag default">模型直接可见</span>' : '<span class="tag ondemand">需指令拉起</span>') + '</span></li>').join('');
+    const mine = SELF_SKILLS.map((s) => '<li><span class="n">' + esc(s.n) + '</span><span class="d">'
+      + (s.t === 'default' ? '<span class="tag default">默认加载</span>' : '<span class="tag ondemand">按需</span>')
+      + '<div style="margin-top:2px">' + esc(s.d) + '</div></span></li>').join('');
+
+    return '<div class="card"><p class="sec">Skills · 哪些默认调用、哪些要拉起</p>'
+      + '<p class="sec" style="margin:10px 0 4px;color:var(--text-2)">Codex（我）· 常驻</p><ul class="list">' + mine + '</ul>'
+      + '<p class="sec" style="margin:14px 0 4px;color:var(--text-2)">小秘 · 自装 ' + ours.length + ' 个</p><ul class="list">' + (rowsOurs || '<li class="dim">—</li>') + '</ul>'
+      + '<p class="sec" style="margin:14px 0 4px;color:var(--text-2)">小秘 · 内置可用 ' + ok.length + ' 个（' + visible.length + ' 个模型直接可见）</p>'
+      + '<ul class="list">' + (rowsOk || '<li class="dim">—</li>') + '</ul>'
+      + '<p class="dim" style="font-size:11.5px;margin:10px 0 0">另有 ' + off.length + ' 个因缺依赖或已关闭（未列出）。</p>'
+      + '</div>';
+  }
+
+  function renderPatches(arch) {
+    const patches = arch.patches || [];
+    const body = patches.length ? patches.map((p) => '<div class="patch">'
+      + '<div class="pp">' + esc(p.purpose || '') + (p.rebuild ? ' <span class="tag alert">升级后需重打</span>' : '') + '</div>'
+      + (p.files && p.files.length ? '<div class="pf">' + p.files.map(esc).join(' · ') + '</div>' : '')
+      + (p.env && p.env.length ? '<div class="pe">' + p.env.map(esc).join(' · ') + '</div>' : '')
+      + (p.note ? '<div class="pn">' + esc(p.note) + '</div>' : '')
+      + '</div>').join('') : '<div class="empty">暂无</div>';
+    return '<div class="card" style="margin-top:14px"><p class="sec">本地补丁（' + patches.length + '）· 升级后需重打</p>' + body
+      + '<p class="dim" style="font-size:11.5px;margin:8px 0 0">补丁清单与还原方式见 za/CODEX-CONTEXT.md。</p></div>';
+  }
+
+  /* ── 连线绘制 ── */
+  function orthPath(sx, sy, tx, ty, axis, r) {
+    const dx = tx - sx, dy = ty - sy;
+    if (axis === 'h') {
+      if (Math.abs(dy) < 1) return ['M ' + sx + ' ' + sy + ' L ' + tx + ' ' + ty, (sx + tx) / 2, ty];
+      const mx = (sx + tx) / 2, d = Math.sign(dy), rr = Math.min(r, Math.abs(dy) / 2, Math.abs(dx) / 2 || r);
+      return ['M ' + sx + ' ' + sy + ' L ' + (mx - rr) + ' ' + sy + ' Q ' + mx + ' ' + sy + ' ' + mx + ' ' + (sy + d * rr)
+        + ' L ' + mx + ' ' + (ty - d * rr) + ' Q ' + mx + ' ' + ty + ' ' + (mx + rr) + ' ' + ty + ' L ' + tx + ' ' + ty, mx, ty];
+    }
+    if (Math.abs(dx) < 1) return ['M ' + sx + ' ' + sy + ' L ' + tx + ' ' + ty, tx, (sy + ty) / 2];
+    const my = (sy + ty) / 2, d = Math.sign(dx), rr = Math.min(r, Math.abs(dx) / 2, Math.abs(dy) / 2 || r);
+    return ['M ' + sx + ' ' + sy + ' L ' + sx + ' ' + (my - rr) + ' Q ' + sx + ' ' + my + ' ' + (sx + d * rr) + ' ' + my
+      + ' L ' + (tx - d * rr) + ' ' + my + ' Q ' + tx + ' ' + my + ' ' + tx + ' ' + (my + rr) + ' L ' + tx + ' ' + ty, tx, my];
+  }
+
+  function drawEdges() {
+    const canvas = $('arch-canvas'), svg = $('arch-svg'), labels = $('arch-labels');
+    if (!canvas || !svg || !labels) return;
+    if (!canvas.offsetWidth) return;
+    const cr = canvas.getBoundingClientRect();
+    svg.setAttribute('width', cr.width);
+    svg.setAttribute('height', cr.height);
+    /* 只清掉上一轮画的线/点，保留 <defs> 里的箭头 marker */
+    svg.querySelectorAll('path[data-from], circle[data-from]').forEach((el) => el.remove());
+    labels.innerHTML = '';
+    const NS = 'http://www.w3.org/2000/svg';
+    const link = {};
+
+    EDGES.forEach((e) => {
+      const A = canvas.querySelector('.arch-node[data-node-id="' + e.from + '"]');
+      const B = canvas.querySelector('.arch-node[data-node-id="' + e.to + '"]');
+      if (!A || !B) return;
+      const ar = A.getBoundingClientRect(), br = B.getBoundingClientRect();
+      let sx, sy, tx, ty;
+      if (e.route === 'h') {
+        const y1 = e.y1 == null ? .5 : e.y1, y2 = e.y2 == null ? .5 : e.y2;
+        sx = ar.right - cr.left; sy = ar.top - cr.top + ar.height * y1;
+        tx = br.left - cr.left;  ty = br.top - cr.top + br.height * y2;
+      } else {
+        const x1 = e.x1 == null ? .5 : e.x1, x2 = e.x2 == null ? .5 : e.x2;
+        sx = ar.left - cr.left + ar.width * x1; sy = ar.bottom - cr.top;
+        tx = br.left - cr.left + br.width * x2;  ty = br.top - cr.top;
+      }
+      const [d, lx, ly] = orthPath(sx, sy, tx, ty, e.route, 8);
+
+      const dot = document.createElementNS(NS, 'circle');
+      dot.setAttribute('cx', sx); dot.setAttribute('cy', sy); dot.setAttribute('r', 2.6);
+      dot.dataset.from = e.from; dot.dataset.to = e.to;
+      svg.appendChild(dot);
+
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('class', 'k-' + (e.kind || 'write'));
+      p.setAttribute('marker-end', 'url(#ah-' + (e.kind || 'write') + ')');
+      p.dataset.from = e.from; p.dataset.to = e.to;
+      svg.appendChild(p);
+
+      const lab = document.createElement('span');
+      lab.className = 'elabel';
+      lab.textContent = e.label;
+      lab.style.left = lx + 'px';
+      lab.style.top = ly + 'px';
+      lab.dataset.kind = e.kind || 'write';
+      lab.dataset.from = e.from; lab.dataset.to = e.to;
+      labels.appendChild(lab);
+      link[e.from + '>' + e.to] = { p, dot, lab, kind: e.kind || 'write' };
+    });
+
+    canvas.querySelectorAll('.arch-node').forEach((n) => {
+      if (n.dataset.bound) return;
+      n.dataset.bound = '1';
+      n.addEventListener('click', () => {
+        selectedNode = (selectedNode === n.dataset.nodeId) ? null : n.dataset.nodeId;
+        syncSelection();
+      });
+    });
+    canvas.__links = link;
+    syncSelection();   /* 重画后必须重新上色，否则旧的选中态会丢（2026-10-09 实锤） */
+  }
+
+  function syncSelection() {
+    const canvas = $('arch-canvas'), detail = $('arch-detail');
+    if (!canvas) return;
+    const sel = selectedNode;
+    const neigh = {};
+    if (sel) EDGES.forEach((e) => { if (e.from === sel) neigh[e.to] = 1; if (e.to === sel) neigh[e.from] = 1; });
+
+    canvas.querySelectorAll('.arch-node').forEach((n) => {
+      const id = n.dataset.nodeId;
+      n.classList.toggle('is-selected', id === sel);
+      n.classList.toggle('is-linked', !!(sel && neigh[id]));
+      n.classList.toggle('is-dim', !!(sel && id !== sel && !neigh[id]));
+      n.setAttribute('aria-pressed', id === sel ? 'true' : 'false');
+    });
+    const links = canvas.__links || {};
+    Object.keys(links).forEach((k) => {
+      const hit = !!sel && (k.split('>')[0] === sel || k.split('>')[1] === sel);
+      const l = links[k];
+      l.p.classList.toggle('is-active', hit);
+      l.p.classList.toggle('is-dim', !!sel && !hit);
+      l.p.setAttribute('marker-end', hit ? 'url(#ah-on)' : 'url(#ah-' + (l.kind || 'write') + ')');
+      l.dot.classList.toggle('is-active', hit);
+      l.dot.classList.toggle('is-dim', !!sel && !hit);
+      l.lab.classList.toggle('is-active', hit);
+      l.lab.classList.toggle('is-dim', !!sel && !hit);
+    });
+
+    if (!sel || !NODE_DETAIL[sel]) {
+      detail.classList.remove('has');
+      detail.innerHTML = '<span class="muted" style="font-size:12.5px">点上面的任意组件，这里会显示它的项目、启动方式、关键文件和实时状态。</span>';
+      return;
+    }
+    const spec = NODE_DETAIL[sel];
+    const node = LAYERS.flatMap((l) => l.nodes).find((n) => n.id === sel) || { name: sel, tech: '' };
+    const facts = liveFacts(sel, currentData || {});
+    detail.classList.add('has');
+    detail.innerHTML = '<div class="dh"><span class="ic" style="width:26px;height:26px;border-radius:8px;background:var(--surface-3);display:grid;place-items:center;color:var(--text-2)">' + icon(node.icon) + '</span>'
+      + '<span class="nm">' + esc(node.name) + '</span>'
+      + '<span class="tag ondemand">' + esc(node.tech) + '</span></div>'
+      + '<div class="kv">'
+      + '<span class="k">用了什么</span><span class="v">' + esc(spec.project) + '</span>'
+      + '<span class="k">怎么起</span><span class="v">' + esc(spec.run) + '</span>'
+      + '<span class="k">关键文件</span><span class="v">' + spec.files.map((x) => '<code class="p">' + esc(x) + '</code>').join(' ') + '</span>'
+      + (spec.env.length ? '<span class="k">环境变量</span><span class="v">' + spec.env.map((x) => '<code class="p">' + esc(x) + '</code>').join(' ') + '</span>' : '')
+      + '<span class="k">说明</span><span class="v">' + esc(spec.note) + '</span>'
+      + (facts.length ? '<span class="k">实时</span><span class="v">' + facts.map((f) => esc(f[0]) + '：' + esc(f[1])).join(' ｜ ') + '</span>' : '')
+      + '</div>';
+  }
+
+  /* ============================================================
+     5. 刷新 / 标签页 / 登录
+     ============================================================ */
+  let currentPassword = '', lastBlobHash = '', pollTimer = null, currentData = null;
+
+  function renderAll(data) {
+    currentData = data;
+    renderTasks(data);
+    renderArch(data);
+    const el = $('meta-update');
+    if (el) el.textContent = data.generatedAt ? fmtDT(data.generatedAt) : '—';
+  }
+
+  async function refresh() {
+    if (!currentPassword) return;
+    try {
+      const blob = await fetchBlob();
+      const h = await blobHash(blob);
+      if (h === lastBlobHash) return;
+      lastBlobHash = h;
+      renderAll(await decryptBlob(blob, currentPassword));
+    } catch (e) {
+      console.error('refresh failed:', e);
+      if (/OperationError|decrypt/i.test(String(e))) { sessionStorage.removeItem('dashboard-pw'); location.reload(); }
+    }
+  }
+
+  function switchTab(name) {
+    document.querySelectorAll('#seg button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+    $('panel-tasks').style.display = name === 'tasks' ? '' : 'none';
+    $('panel-arch').style.display = name === 'arch' ? '' : 'none';
+    if (name === 'arch') requestAnimationFrame(() => { drawEdges(); syncSelection(); });
+  }
+
+  async function doLogin() {
+    const pw = $('pw').value;
+    if (!pw) return;
+    const errEl = $('error'), btn = $('btn');
+    btn.disabled = true;
+    errEl.textContent = '解密中…（PBKDF2 20 万轮，约 1–2 秒）';
+    await new Promise((r) => setTimeout(r, 10));
+    try {
+      const blob = await fetchBlob();
+      const data = await decryptBlob(blob, pw);
+      currentPassword = pw;
+      sessionStorage.setItem('dashboard-pw', pw);
+      lastBlobHash = await blobHash(blob);
+      $('login').style.display = 'none';
+      $('app').style.display = 'block';
+      renderAll(data);
+      errEl.textContent = '';
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(refresh, POLL_MS);
+    } catch (e) {
+      errEl.textContent = '密码不正确';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  $('btn').addEventListener('click', doLogin);
+  $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  document.querySelectorAll('#seg button').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+  window.addEventListener('resize', () => { if ($('panel-arch').style.display !== 'none') drawEdges(); });
+  if (window.ResizeObserver) new ResizeObserver(() => { if ($('panel-arch').style.display !== 'none') drawEdges(); }).observe(document.body);
+  window.addEventListener('beforeunload', () => { if (pollTimer) clearInterval(pollTimer); });
+
+  (function boot() {
+    const saved = sessionStorage.getItem('dashboard-pw');
+    if (saved) { $('pw').value = saved; doLogin(); }
+  })();
+  </script> </body> </html>
