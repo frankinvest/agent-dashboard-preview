@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>热榜模块 · 界面原型</title><style>
+:root{--bg:#f6f7f9;--surface:#fff;--surface-3:#f2f4f7;--border:#e4e7ec;--text:#0f1728;--text-2:#475467;
+--text-3:#98a2b3;--accent:#4f46e5;--accent-soft:#eef2ff;--ok:#12b76a;--run:#f79009;--run-soft:#fffaeb;
+--run-line:#fedf89;--r:12px;--r-sm:8px;--shadow:0 1px 2px rgba(16,24,40,.05);
+--mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);padding:24px;
+font:13.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto}
+.topbar{display:flex;align-items:center;gap:10px;font-size:17px}
+.brand-name{font-weight:600}.spacer{flex:1}
+.live{font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:6px}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:block}
+.stamp{font-size:12px;color:var(--text-3);margin-top:2px}
+.proto{margin:14px 0 18px;padding:9px 13px;border:1px solid var(--run-line);background:var(--run-soft);
+color:#93370d;border-radius:var(--r-sm);font-size:12.5px}
+.seg{display:inline-flex;gap:2px;background:var(--surface-3);padding:3px;border-radius:10px;margin-bottom:16px}
+.seg button{border:0;background:none;font:inherit;font-size:13.5px;font-weight:500;color:var(--text-2);
+padding:7px 17px;border-radius:8px}
+.seg button.on{background:var(--surface);color:var(--accent);box-shadow:var(--shadow)}
+.seg button.new::after{content:"新";font-size:10px;background:var(--accent);color:#fff;border-radius:4px;
+padding:1px 4px;margin-left:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid>*{min-width:0}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.sr{position:absolute;opacity:0;pointer-events:none}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+padding:16px 18px;box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:10px}
+.card-head h2{font-size:15px;margin:0;font-weight:600}
+.sub{margin:2px 0 0;font-size:11.5px;color:var(--text-3);font-family:var(--mono)}
+.mini{margin-left:auto;display:flex;gap:2px;background:var(--surface-3);padding:2px;border-radius:7px}
+.mbtn{font-size:12px;color:var(--text-2);padding:4px 10px;border-radius:5px;cursor:pointer;user-select:none}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+th{text-align:left;font-size:11px;font-weight:600;color:var(--text-3);padding:6px;border-bottom:1px solid var(--border)}
+td{padding:7px 6px;border-bottom:1px solid var(--surface-3);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.num{text-align:right;font-family:var(--mono);white-space:nowrap}
+.rk{width:26px;color:var(--text-3);font-family:var(--mono)}
+.nm a{color:var(--text);text-decoration:none;font-weight:500;display:block;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap}
+.ds{display:block;color:var(--text-3);font-size:11.5px;margin-top:1px;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.spd{color:var(--ok);font-weight:600}
+.mute{color:var(--text-3)}
+.lang{color:var(--text-2);font-size:12px}
+.t-rise{display:none}
+#b1-r:checked~table .t-hot,#b2-r:checked~table .t-hot{display:none}
+#b1-r:checked~table .t-rise,#b2-r:checked~table .t-rise{display:table-row-group}
+#b1-h:checked~.card-head .mbtn[for="b1-h"],#b2-h:checked~.card-head .mbtn[for="b2-h"],
+#b1-r:checked~.card-head .mbtn[for="b1-r"],#b2-r:checked~.card-head .mbtn[for="b2-r"]
+{background:var(--surface);color:var(--accent);box-shadow:var(--shadow)}
+footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;
+color:var(--text-3);display:flex;gap:18px;flex-wrap:wrap}
+footer code{font-family:var(--mono);background:var(--surface-3);padding:1px 5px;border-radius:4px}
+</style></head>
+<body><div class="wrap">
+<div class="topbar"><span class="brand-name">Agent 控制台</span><span class="spacer"></span>
+<span class="live"><i></i>实时 · 10 秒刷新</span></div>
+<div class="stamp">榜单数据 · 每天更新一次（与 60 秒实时刷新解耦）</div>
+<div class="proto">界面原型 · 纯展示无功能。表格为今日真实抓取数据；正式实现后由 gen_dashboard.py 每天写入快照。</div>
+<div class="seg"><button>总览</button><button>任务档案</button><button>架构解释</button>
+<button class="on new">热榜</button></div>
+<div class="grid"><section class="card">
+<input type="radio" name="b1" id="b1-h" checked class="sr">
+<input type="radio" name="b1" id="b1-r" class="sr">
+<div class="card-head"><div><h2>GitHub Agent</h2><p class="sub">topic:ai-agent · stars > 800</p></div>
+<div class="mini"><label for="b1-h" class="mbtn">热榜</label><label for="b1-r" class="mbtn">飙升榜</label></div></div>
+<table><colgroup><col style="width:34px"><col><col style="width:86px"><col style="width:84px"><col style="width:76px"><col style="width:72px"></colgroup><thead><tr><th>#</th><th>仓库</th><th class="num">总星数</th><th class="num">最近推送</th><th class="num">日均星增</th><th>语言</th></tr></thead>
+<tbody class="t-hot"><tr><td class="rk">1</td><td class="nm"><a href="#">NousResearch/hermes-agent</a><span class="ds">The agent that grows with you</span></td><td class="num">★ 253,238</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">2</td><td class="nm"><a href="#">Panniantong/Agent-Reach</a><span class="ds">Give your AI agent eyes to see the entire internet. Read &amp; search Twitter, R</span></td><td class="num">★ 96,705</td><td class="num mute">5天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">3</td><td class="nm"><a href="#">shareAI-lab/learn-claude-code</a><span class="ds">Bash is all you need -  A nano claude code–like 「agent harness」, built from 0 to</span></td><td class="num">★ 78,472</td><td class="num mute">15天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">4</td><td class="nm"><a href="#">thedaviddias/Front-End-Checklist</a><span class="ds">🗂 The essential checklist for modern web development, for humans and AI agents</span></td><td class="num">★ 74,442</td><td class="num mute">7天前</td><td class="num spd">—</td><td class="lang">MDX</td></tr>
+<tr><td class="rk">5</td><td class="nm"><a href="#">career-ops-hq/career-ops</a><span class="ds">Open-source AI job search agent and job finder: scan job boards, score each job </span></td><td class="num">★ 74,214</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">6</td><td class="nm"><a href="#">ZhuLinsen/daily_stock_analysis</a><span class="ds">LLM 驱动的多市场股票智能分析系统：多源行情、实时新闻、决策看板与自动推送，支持零成本定时运行。  LLM-powered multi-market stoc</span></td><td class="num">★ 66,253</td><td class="num mute">2天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">7</td><td class="nm"><a href="#">hugohe3/ppt-master</a><span class="ds">AI turns documents or topics into real, native PowerPoint decks—with native shap</span></td><td class="num">★ 61,324</td><td class="num mute">2天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">8</td><td class="nm"><a href="#">bojieli/ai-agent-book</a><span class="ds">《深入理解 AI Agent：设计原理与工程实践》（李博杰 著）开源主仓库：全书正文、编译版 PDF 与按章配套代码</span></td><td class="num">★ 53,781</td><td class="num mute">5天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">9</td><td class="nm"><a href="#">CherryHQ/cherry-studio</a><span class="ds">AI productivity studio with smart chat, autonomous agents, and 300+ assistants. </span></td><td class="num">★ 52,587</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">TypeScript</td></tr>
+<tr><td class="rk">10</td><td class="nm"><a href="#">HKUDS/nanobot</a><span class="ds">Ultra-lightweight, open-source, self-hosted personal AI agent framework in Pytho</span></td><td class="num">★ 48,986</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Python</td></tr></tbody><tbody class="t-rise"><tr><td class="rk">1</td><td class="nm"><a href="#">QingYunA/answer-me-with-html</a><span class="ds">创建于 2026-10-02</span></td><td class="num">★ 3,206</td><td class="num mute">—</td><td class="num spd">291</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">2</td><td class="nm"><a href="#">freestylefly/WeChatBridge</a><span class="ds">创建于 2026-09-21</span></td><td class="num">★ 1,404</td><td class="num mute">—</td><td class="num spd">64</td><td class="lang">Swift</td></tr>
+<tr><td class="rk">3</td><td class="nm"><a href="#">jiwoochris/artex-ko</a><span class="ds">创建于 2026-10-03</span></td><td class="num">★ 1,397</td><td class="num mute">—</td><td class="num spd">140</td><td class="lang">Go</td></tr>
+<tr><td class="rk">4</td><td class="nm"><a href="#">qiz029/dscode</a><span class="ds">创建于 2026-09-11</span></td><td class="num">★ 1,028</td><td class="num mute">—</td><td class="num spd">32</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">5</td><td class="nm"><a href="#">nano-muse/nanoMuse</a><span class="ds">创建于 2026-09-23</span></td><td class="num">★ 1,018</td><td class="num mute">—</td><td class="num spd">51</td><td class="lang">Swift</td></tr>
+<tr><td class="rk">6</td><td class="nm"><a href="#">dmoshehun-prog/learn-from-materials</a><span class="ds">创建于 2026-09-08</span></td><td class="num">★ 1,013</td><td class="num mute">—</td><td class="num spd">29</td><td class="lang">Python</td></tr>
+<tr><td class="rk">7</td><td class="nm"><a href="#">onehumanbeing/esp32-iphone-agent</a><span class="ds">创建于 2026-10-11</span></td><td class="num">★ 960</td><td class="num mute">—</td><td class="num spd">480</td><td class="lang">Python</td></tr>
+<tr><td class="rk">8</td><td class="nm"><a href="#">rociiu/talorys</a><span class="ds">创建于 2026-10-10</span></td><td class="num">★ 918</td><td class="num mute">—</td><td class="num spd">306</td><td class="lang">TypeScript</td></tr>
+<tr><td class="rk">9</td><td class="nm"><a href="#">JourniOne-ai/JourniOne-Planning-Skills</a><span class="ds">创建于 2026-09-16</span></td><td class="num">★ 828</td><td class="num mute">—</td><td class="num spd">31</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">10</td><td class="nm"><a href="#">MichaelKinsy/PiG</a><span class="ds">创建于 2026-09-17</span></td><td class="num">★ 586</td><td class="num mute">—</td><td class="num spd">23</td><td class="lang">Go</td></tr></tbody></table></section><section class="card">
+<input type="radio" name="b2" id="b2-h" checked class="sr">
+<input type="radio" name="b2" id="b2-r" class="sr">
+<div class="card-head"><div><h2>AI 工具</h2><p class="sub">topic:llm · stars > 3000</p></div>
+<div class="mini"><label for="b2-h" class="mbtn">热榜</label><label for="b2-r" class="mbtn">飙升榜</label></div></div>
+<table><colgroup><col style="width:34px"><col><col style="width:86px"><col style="width:84px"><col style="width:76px"><col style="width:72px"></colgroup><thead><tr><th>#</th><th>仓库</th><th class="num">总星数</th><th class="num">最近推送</th><th class="num">日均星增</th><th>语言</th></tr></thead>
+<tbody class="t-hot"><tr><td class="rk">1</td><td class="nm"><a href="#">affaan-m/ECC</a><span class="ds">The agent harness performance optimization system. Skills, instincts, memory, se</span></td><td class="num">★ 278,086</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">2</td><td class="nm"><a href="#">NousResearch/hermes-agent</a><span class="ds">The agent that grows with you</span></td><td class="num">★ 253,238</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">3</td><td class="nm"><a href="#">firecrawl/firecrawl</a><span class="ds">Supercharge your AI agents with data from the web and beyond. Building the libra</span></td><td class="num">★ 190,947</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">TypeScript</td></tr>
+<tr><td class="rk">4</td><td class="nm"><a href="#">Significant-Gravitas/AutoGPT</a><span class="ds">AutoGPT is the vision of accessible AI for everyone, to use and to build on. Our</span></td><td class="num">★ 187,543</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">5</td><td class="nm"><a href="#">ollama/ollama</a><span class="ds">Get up and running with Kimi, GLM, MiniMax, DeepSeek, gpt-oss, Qwen, Gemma and o</span></td><td class="num">★ 182,954</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Go</td></tr>
+<tr><td class="rk">6</td><td class="nm"><a href="#">morluto/rea</a><span class="ds">Reverse engineer anything with agents, from app behavior down to native binaries</span></td><td class="num">★ 173,597</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">TypeScript</td></tr>
+<tr><td class="rk">7</td><td class="nm"><a href="#">f/prompts.chat</a><span class="ds">f.k.a. Awesome ChatGPT Prompts. Share, discover, and collect prompts from the co</span></td><td class="num">★ 172,781</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">HTML</td></tr>
+<tr><td class="rk">8</td><td class="nm"><a href="#">huggingface/transformers</a><span class="ds">🤗 Transformers: the model-definition framework for state-of-the-art machine lear</span></td><td class="num">★ 167,618</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">Python</td></tr>
+<tr><td class="rk">9</td><td class="nm"><a href="#">DietrichGebert/ponytail</a><span class="ds">Makes your AI agent think like the laziest senior dev in the room. The best code</span></td><td class="num">★ 162,048</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">10</td><td class="nm"><a href="#">langgenius/dify</a><span class="ds">Build Agentic workflows, RAG pipelines, with rich AI model and tool support on o</span></td><td class="num">★ 158,314</td><td class="num mute">1天前</td><td class="num spd">—</td><td class="lang">TypeScript</td></tr></tbody><tbody class="t-rise"><tr><td class="rk">1</td><td class="nm"><a href="#">Ebony-Vinyl/dsh-our-free-model</a><span class="ds">创建于 2026-09-24</span></td><td class="num">★ 12,622</td><td class="num mute">—</td><td class="num spd">664</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">2</td><td class="nm"><a href="#">yetone/magpie</a><span class="ds">创建于 2026-09-23</span></td><td class="num">★ 10,784</td><td class="num mute">—</td><td class="num spd">539</td><td class="lang">Go</td></tr>
+<tr><td class="rk">3</td><td class="nm"><a href="#">jev-chat/jev-chat-jarvis</a><span class="ds">创建于 2026-09-21</span></td><td class="num">★ 7,683</td><td class="num mute">—</td><td class="num spd">349</td><td class="lang">Kotlin</td></tr>
+<tr><td class="rk">4</td><td class="nm"><a href="#">KKKKhazix/AIHOT</a><span class="ds">创建于 2026-09-28</span></td><td class="num">★ 7,433</td><td class="num mute">—</td><td class="num spd">496</td><td class="lang">TypeScript</td></tr>
+<tr><td class="rk">5</td><td class="nm"><a href="#">QingYunA/answer-me-with-html</a><span class="ds">创建于 2026-10-02</span></td><td class="num">★ 3,206</td><td class="num mute">—</td><td class="num spd">291</td><td class="lang">JavaScript</td></tr>
+<tr><td class="rk">6</td><td class="nm"><a href="#">LosaLosSantos/aurelio-finance</a><span class="ds">创建于 2026-10-06</span></td><td class="num">★ 3,045</td><td class="num mute">—</td><td class="num spd">435</td><td class="lang">Python</td></tr>
+<tr><td class="rk">7</td><td class="nm"><a href="#">yibie/awesome-jev</a><span class="ds">创建于 2026-09-17</span></td><td class="num">★ 2,305</td><td class="num mute">—</td><td class="num spd">89</td><td class="lang">Python</td></tr>
+<tr><td class="rk">8</td><td class="nm"><a href="#">nanaism/yomiyasu</a><span class="ds">创建于 2026-09-30</span></td><td class="num">★ 1,926</td><td class="num mute">—</td><td class="num spd">148</td><td class="lang">Python</td></tr>
+<tr><td class="rk">9</td><td class="nm"><a href="#">bilibili/Index-Translate</a><span class="ds">创建于 2026-09-15</span></td><td class="num">★ 1,440</td><td class="num mute">—</td><td class="num spd">51</td><td class="lang">Python</td></tr>
+<tr><td class="rk">10</td><td class="nm"><a href="#">jiwoochris/artex-ko</a><span class="ds">创建于 2026-10-03</span></td><td class="num">★ 1,397</td><td class="num mute">—</td><td class="num spd">140</td><td class="lang">Go</td></tr></tbody></table></section></div></div>
+<footer><span>数据源 <code>GitHub Search API</code>（匿名）</span>
+<span>口径 <code>topic:ai-agent</code> · <code>topic:llm</code></span>
+<span>热榜 = 星数存量 · 飙升榜 = 日均星增</span><span>更新 2026-10-13</span></footer>
+</div></body></html>
